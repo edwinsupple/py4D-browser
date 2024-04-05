@@ -33,7 +33,7 @@ def update_real_space_view(self, reset=False):
         self.vimg_scale_linear_action.setChecked(True)
         scaling_mode = "Linear"
 
-    real_space_colormap = self.real_space_colormap_group.checkedAction().text()
+    real_space_colormap = self.real_space_colormap_group.checkedAction().text().lower()
     assert real_space_colormap in [
         'grey',
         'viridis',
@@ -255,7 +255,7 @@ def update_diffraction_space_view(self, reset=False):
         "Rectangular",
     ], detector_shape
 
-    diffraction_colormap = self.diffraction_colormap_group.checkedAction().text()
+    diffraction_colormap = self.diffraction_colormap_group.checkedAction().text().lower()
     assert diffraction_colormap in [
         'grey',
         'viridis',
