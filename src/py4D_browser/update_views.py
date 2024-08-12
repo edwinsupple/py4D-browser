@@ -2,14 +2,15 @@ import pyqtgraph as pg
 import numpy as np
 import py4DSTEM
 from functools import partial
+from PyQt5.QtWidgets import QApplication, QToolTip
+from PyQt5 import QtCore
+from PyQt5.QtGui import QCursor
+import os
 
 from py4D_browser.utils import pg_point_roi, make_detector, complex_to_Lab
 
 
 def update_real_space_view(self, reset=False):
-    scaling_mode = self.vimg_scaling_group.checkedAction().text().replace("&", "")
-    assert scaling_mode in ["Linear", "Log", "Square Root"], scaling_mode
-
     detector_shape = self.detector_shape_group.checkedAction().text().replace("&", "")
     assert detector_shape in [
         "Point",
@@ -71,8 +72,8 @@ def update_real_space_view(self, reset=False):
     elif detector_shape == "Circle":
         R = self.virtual_detector_roi.size()[0] / 2.0
 
-        x0 = self.virtual_detector_roi.pos()[0] + R
-        y0 = self.virtual_detector_roi.pos()[1] + R
+        x0 = self.virtual_detector_roi.pos()[1] + R
+        y0 = self.virtual_detector_roi.pos()[0] + R
 
         self.diffraction_space_view_text.setText(
             f"Detector Center: ({x0:.0f},{y0:.0f}), Radius: {R:.0f}"
@@ -85,8 +86,8 @@ def update_real_space_view(self, reset=False):
         inner_pos = self.virtual_detector_roi_inner.pos()
         inner_size = self.virtual_detector_roi_inner.size()
         R_inner = inner_size[0] / 2.0
-        x0 = inner_pos[0] + R_inner
-        y0 = inner_pos[1] + R_inner
+        x0 = inner_pos[1] + R_inner
+        y0 = inner_pos[0] + R_inner
 
         outer_size = self.virtual_detector_roi_outer.size()
         R_outer = outer_size[0] / 2.0
@@ -120,10 +121,9 @@ def update_real_space_view(self, reset=False):
         raise ValueError("Detector shape not recognized")
 
     if mask is not None:
-        # For debugging masks:
-        # self.diffraction_space_widget.setImage(
-        #     mask.T, autoLevels=True, autoRange=True
-        # )
+        if "MASK_DEBUG" in os.environ:
+            self.set_diffraction_image(mask.astype(np.float32), reset=reset)
+            return
         mask = mask.astype(np.float32)
         vimg = np.zeros((self.datacube.R_Nx, self.datacube.R_Ny))
         iterator = py4DSTEM.tqdmnd(self.datacube.R_Nx, self.datacube.R_Ny, disable=True)
@@ -170,16 +170,28 @@ def update_real_space_view(self, reset=False):
         else:
             raise ValueError("Oopsie")
 
+    self.set_virtual_image(vimg, reset=reset)
+
+
+def set_virtual_image(self, vimg, reset=False):
+    self.unscaled_realspace_image = vimg
+    self._render_virtual_image(reset=reset)
+
+
+def _render_virtual_image(self, reset=False):
+    vimg = self.unscaled_realspace_image
+
+    scaling_mode = self.vimg_scaling_group.checkedAction().text().replace("&", "")
+    assert scaling_mode in ["Linear", "Log", "Square Root"], scaling_mode
+
     if scaling_mode == "Linear":
-        new_view = vimg
+        new_view = vimg.copy()
     elif scaling_mode == "Log":
         new_view = np.log2(np.maximum(vimg, self.LOG_SCALE_MIN_VALUE))
     elif scaling_mode == "Square Root":
         new_view = np.sqrt(np.maximum(vimg, 0))
     else:
         raise ValueError("Mode not recognized")
-
-    self.unscaled_realspace_image = vimg
 
     self.realspace_statistics_text.setToolTip(
         f"min\t{vimg.min():.5g}\nmax\t{vimg.max():.5g}\nmean\t{vimg.mean():.5g}\nsum\t{vimg.sum():.5g}\nstd\t{np.std(vimg):.5g}"
@@ -191,7 +203,10 @@ def update_real_space_view(self, reset=False):
         new_view.T,
         autoLevels=False,
         levels=(
-            (np.percentile(new_view, 2), np.percentile(new_view, 98))
+            (
+                np.percentile(new_view, self.real_space_autoscale_percentiles[0]),
+                np.percentile(new_view, self.real_space_autoscale_percentiles[1]),
+            )
             if auto_level
             else None
         ),
@@ -200,8 +215,10 @@ def update_real_space_view(self, reset=False):
     self.real_space_widget.setPredefinedGradient(real_space_colormap)
 
     # Update FFT view
+    self.unscaled_fft_image = None
+    fft_window = np.hanning(vimg.shape[0])[:, None] * np.hanning(vimg.shape[1])[None, :]
     if self.fft_source_action_group.checkedAction().text() == "Virtual Image FFT":
-        fft = np.abs(np.fft.fftshift(np.fft.fft2(new_view))) ** 0.5
+        fft = np.abs(np.fft.fftshift(np.fft.fft2(vimg * fft_window))) ** 0.5
         levels = (np.min(fft), np.percentile(fft, 99.9))
         mode_switch = self.fft_widget_text.textItem.toPlainText() != "Virtual Image FFT"
         self.fft_widget_text.setText("Virtual Image FFT")
@@ -212,11 +229,12 @@ def update_real_space_view(self, reset=False):
         if mode_switch:
             # Need to autorange after setRect
             self.fft_widget.autoRange()
+        self.unscaled_fft_image = fft
     elif (
         self.fft_source_action_group.checkedAction().text()
         == "Virtual Image FFT (complex)"
     ):
-        fft = np.fft.fftshift(np.fft.fft2(new_view))
+        fft = np.fft.fftshift(np.fft.fft2(vimg * fft_window))
         levels = (np.min(np.abs(fft)), np.percentile(np.abs(fft), 99.9))
         mode_switch = self.fft_widget_text.textItem.toPlainText() != "Virtual Image FFT"
         self.fft_widget_text.setText("Virtual Image FFT")
@@ -238,12 +256,10 @@ def update_real_space_view(self, reset=False):
         if mode_switch:
             # Need to autorange after setRect
             self.fft_widget.autoRange()
+        self.unscaled_fft_image = fft
 
 
 def update_diffraction_space_view(self, reset=False):
-    scaling_mode = self.diff_scaling_group.checkedAction().text().replace("&", "")
-    assert scaling_mode in ["Linear", "Log", "Square Root"]
-
     if self.datacube is None:
         return
 
@@ -292,10 +308,22 @@ def update_diffraction_space_view(self, reset=False):
     else:
         raise ValueError("Detector shape not recognized")
 
+    self.set_diffraction_image(DP, reset=reset)
+
+
+def set_diffraction_image(self, DP, reset=False):
     self.unscaled_diffraction_image = DP
+    self._render_diffraction_image(reset=reset)
+
+
+def _render_diffraction_image(self, reset=False):
+    DP = self.unscaled_diffraction_image
+
+    scaling_mode = self.diff_scaling_group.checkedAction().text().replace("&", "")
+    assert scaling_mode in ["Linear", "Log", "Square Root"]
 
     if scaling_mode == "Linear":
-        new_view = DP
+        new_view = DP.copy()
     elif scaling_mode == "Log":
         new_view = np.log2(np.maximum(DP, self.LOG_SCALE_MIN_VALUE))
     elif scaling_mode == "Square Root":
@@ -313,7 +341,10 @@ def update_diffraction_space_view(self, reset=False):
         new_view.T,
         autoLevels=False,
         levels=(
-            (np.percentile(new_view, 2), np.percentile(new_view, 98))
+            (
+                np.percentile(new_view, self.diffraction_autoscale_percentiles[0]),
+                np.percentile(new_view, self.diffraction_autoscale_percentiles[1]),
+            )
             if auto_level
             else None
         ),
@@ -480,6 +511,20 @@ def update_diffraction_detector(self):
     self.update_real_space_view(reset=True)
 
 
+def set_diffraction_autoscale_range(self, percentiles, redraw=True):
+    self.diffraction_autoscale_percentiles = percentiles
+
+    if redraw:
+        self._render_diffraction_image(reset=False)
+
+
+def set_real_space_autoscale_range(self, percentiles, redraw=True):
+    self.real_space_autoscale_percentiles = percentiles
+
+    if redraw:
+        self._render_virtual_image(reset=False)
+
+
 def nudge_real_space_selector(self, dx, dy):
     if (
         hasattr(self, "real_space_point_selector")
@@ -524,6 +569,35 @@ def nudge_diffraction_selector(self, dx, dy):
     position[1] += dx
 
     selector.setPos(position)
+
+
+def update_tooltip(self):
+    modifier_keys = QApplication.queryKeyboardModifiers()
+    # print(self.isHidden())
+
+    if (
+        QtCore.Qt.ControlModifier == modifier_keys
+        and self.datacube is not None
+        and self.isActiveWindow()
+    ):
+        global_pos = QCursor.pos()
+
+        for scene, data in [
+            (self.diffraction_space_widget, self.unscaled_diffraction_image),
+            (self.real_space_widget, self.unscaled_realspace_image),
+            (self.fft_widget, self.unscaled_fft_image),
+        ]:
+            pos_in_scene = scene.mapFromGlobal(QCursor.pos())
+            if scene.getView().rect().contains(pos_in_scene):
+                pos_in_data = scene.view.mapSceneToView(pos_in_scene)
+
+                y = int(np.clip(np.floor(pos_in_data.x()), 0, data.shape[0] - 1))
+                x = int(np.clip(np.floor(pos_in_data.y()), 0, data.shape[1] - 1))
+                display_text = f"[{x},{y}]: {data[x,y]:.5g}"
+
+                # Clearing the tooltip forces it to move every tick, but it flickers
+                # QToolTip.showText(global_pos, "")
+                QToolTip.showText(global_pos, display_text)
 
 
 def update_annulus_pos(self):

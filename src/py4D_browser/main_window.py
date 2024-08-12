@@ -9,15 +9,17 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QActionGroup,
     QLabel,
-    QPushButton,
+    QToolTip,
 )
 
+from matplotlib.backend_bases import tools
 import pyqtgraph as pg
 import numpy as np
 
 from functools import partial
 from pathlib import Path
 import importlib
+import os
 
 from py4D_browser.utils import pg_point_roi, VLine, LatchingButton
 from py4D_browser.scalebar import ScaleBar
@@ -43,18 +45,29 @@ class DataViewer(QMainWindow):
         export_datacube,
         export_virtual_image,
         show_keyboard_map,
+        show_calibration_dialog,
         reshape_data,
+        update_scalebars,
+        reconstruct_tcBF_auto,
+        reconstruct_tcBF_manual,
     )
 
     from py4D_browser.update_views import (
+        set_virtual_image,
+        set_diffraction_image,
+        _render_virtual_image,
+        _render_diffraction_image,
         update_diffraction_space_view,
         update_real_space_view,
         update_realspace_detector,
         update_diffraction_detector,
+        set_diffraction_autoscale_range,
+        set_real_space_autoscale_range,
         nudge_real_space_selector,
         nudge_diffraction_selector,
         update_annulus_pos,
         update_annulus_radii,
+        update_tooltip,
     )
 
     HAS_EMPAD2 = importlib.util.find_spec("empad2") is not None
@@ -86,6 +99,14 @@ class DataViewer(QMainWindow):
         self.setup_menus()
         self.setup_views()
 
+        # setup listener for tooltip
+        self.tooltip_timer = pg.ThreadsafeTimer()
+        self.tooltip_timer.timeout.connect(self.update_tooltip)
+        self.tooltip_timer.start(1000 // 30)  # run tooltip at 30 Hz
+        font = QtGui.QFont(self.font())
+        font.setPointSize(10)
+        QToolTip.setFont(font)
+
         self.resize(1000, 800)
 
         self.show()
@@ -93,6 +114,10 @@ class DataViewer(QMainWindow):
         # If a file was passed on the command line, open it
         if len(argv) > 1:
             self.load_file(argv[1])
+
+        # launch pyqtgraph's debug console if environment variable exists
+        if os.environ.get("PY4DGUI_DEBUG"):
+            pg.dbg()
 
     def setup_menus(self):
         self.menu_bar = self.menuBar()
@@ -197,7 +222,7 @@ class DataViewer(QMainWindow):
         diff_scale_linear_action = QAction("Linear", self)
         diff_scale_linear_action.setCheckable(True)
         diff_scale_linear_action.triggered.connect(
-            partial(self.update_diffraction_space_view, True)
+            partial(self._render_diffraction_image, True)
         )
         diff_scaling_group.addAction(diff_scale_linear_action)
         self.scaling_menu.addAction(diff_scale_linear_action)
@@ -205,7 +230,7 @@ class DataViewer(QMainWindow):
         diff_scale_log_action = QAction("Log", self)
         diff_scale_log_action.setCheckable(True)
         diff_scale_log_action.triggered.connect(
-            partial(self.update_diffraction_space_view, True)
+            partial(self._render_diffraction_image, True)
         )
         diff_scaling_group.addAction(diff_scale_log_action)
         self.scaling_menu.addAction(diff_scale_log_action)
@@ -213,7 +238,7 @@ class DataViewer(QMainWindow):
         diff_scale_sqrt_action = QAction("Square Root", self)
         diff_scale_sqrt_action.setCheckable(True)
         diff_scale_sqrt_action.triggered.connect(
-            partial(self.update_diffraction_space_view, True)
+            partial(self._render_diffraction_image, True)
         )
         diff_scaling_group.addAction(diff_scale_sqrt_action)
         diff_scale_sqrt_action.setChecked(True)
@@ -235,7 +260,7 @@ class DataViewer(QMainWindow):
         vimg_scale_linear_action.setCheckable(True)
         vimg_scale_linear_action.setChecked(True)
         vimg_scale_linear_action.triggered.connect(
-            partial(self.update_real_space_view, True)
+            partial(self._render_virtual_image, True)
         )
         vimg_scaling_group.addAction(vimg_scale_linear_action)
         self.scaling_menu.addAction(vimg_scale_linear_action)
@@ -243,7 +268,7 @@ class DataViewer(QMainWindow):
         vimg_scale_log_action = QAction("Log", self)
         vimg_scale_log_action.setCheckable(True)
         vimg_scale_log_action.triggered.connect(
-            partial(self.update_real_space_view, True)
+            partial(self._render_virtual_image, True)
         )
         vimg_scaling_group.addAction(vimg_scale_log_action)
         self.scaling_menu.addAction(vimg_scale_log_action)
@@ -251,10 +276,56 @@ class DataViewer(QMainWindow):
         vimg_scale_sqrt_action = QAction("Square Root", self)
         vimg_scale_sqrt_action.setCheckable(True)
         vimg_scale_sqrt_action.triggered.connect(
-            partial(self.update_real_space_view, True)
+            partial(self._render_virtual_image, True)
         )
         vimg_scaling_group.addAction(vimg_scale_sqrt_action)
         self.scaling_menu.addAction(vimg_scale_sqrt_action)
+
+        # Autorange menu
+        self.autorange_menu = QMenu("&Autorange", self)
+        self.menu_bar.addMenu(self.autorange_menu)
+
+        diff_autoscale_separator = QAction("Diffraction", self)
+        diff_autoscale_separator.setDisabled(True)
+        self.autorange_menu.addAction(diff_autoscale_separator)
+
+        diff_range_group = QActionGroup(self)
+        diff_range_group.setExclusive(True)
+
+        for scale_range in [(0, 100), (0.1, 99.9), (1, 99), (2, 98), (5, 95)]:
+            action = QAction(f"{scale_range[0]}% – {scale_range[1]}%", self)
+            diff_range_group.addAction(action)
+            self.autorange_menu.addAction(action)
+            action.setCheckable(True)
+            action.triggered.connect(
+                partial(self.set_diffraction_autoscale_range, scale_range)
+            )
+            # set default
+            if scale_range[0] == 2 and scale_range[1] == 98:
+                action.setChecked(True)
+                self.set_diffraction_autoscale_range(scale_range, redraw=False)
+
+        self.autorange_menu.addSeparator()
+
+        vimg_autoscale_separator = QAction("Virtual Image", self)
+        vimg_autoscale_separator.setDisabled(True)
+        self.autorange_menu.addAction(vimg_autoscale_separator)
+
+        vimg_range_group = QActionGroup(self)
+        vimg_range_group.setExclusive(True)
+
+        for scale_range in [(0, 100), (0.1, 99.9), (1, 99), (2, 98), (5, 95)]:
+            action = QAction(f"{scale_range[0]}% – {scale_range[1]}%", self)
+            vimg_range_group.addAction(action)
+            self.autorange_menu.addAction(action)
+            action.setCheckable(True)
+            action.triggered.connect(
+                partial(self.set_real_space_autoscale_range, scale_range)
+            )
+            # set default
+            if scale_range[0] == 2 and scale_range[1] == 98:
+                action.setChecked(True)
+                self.set_real_space_autoscale_range(scale_range, redraw=False)
 
         # Detector Response Menu
         self.detector_menu = QMenu("&Detector Response", self)
@@ -390,64 +461,25 @@ class DataViewer(QMainWindow):
             partial(self.update_diffraction_space_view, False)
         )
 
-#Color Mapping Menu
-        self.colormap_menu = QMenu("&Colormap", self)
-        self.menu_bar.addMenu(self.colormap_menu)
 
-        diffraction_colormap_group = QActionGroup(self)
-        diffraction_colormap_group.setExclusive(True)
-        self.diffraction_colormap_group = diffraction_colormap_group
+        # Processing menu
+        self.processing_menu = QMenu("&Processing", self)
+        self.menu_bar.addMenu(self.processing_menu)
 
-        diffraction_colormap_separator = QAction("Diffraction", self)
-        diffraction_colormap_separator.setDisabled(True)
-        self.colormap_menu.addAction(diffraction_colormap_separator)
+        calibrate_action = QAction("&Calibrate...", self)
+        calibrate_action.triggered.connect(self.show_calibration_dialog)
+        self.processing_menu.addAction(calibrate_action)
 
-        diffraction_grey_action = QAction("&Grey", self)
-        diffraction_grey_action.setCheckable(True)
-        diffraction_grey_action.setChecked(True)
-        diffraction_grey_action.triggered.connect(self.update_diffraction_space_view)
-        diffraction_colormap_group.addAction(diffraction_grey_action)
-        self.colormap_menu.addAction(diffraction_grey_action)
+        tcBF_action_manual = QAction("tcBF (Manual)...", self)
+        tcBF_action_manual.triggered.connect(self.reconstruct_tcBF_manual)
+        self.processing_menu.addAction(tcBF_action_manual)
+        tcBF_action_manual.setEnabled(False)
 
-        diffraction_viridis_action = QAction("&Viridis", self)
-        diffraction_viridis_action.setCheckable(True)
-        diffraction_viridis_action.triggered.connect(self.update_diffraction_space_view)
-        diffraction_colormap_group.addAction(diffraction_viridis_action)
-        self.colormap_menu.addAction(diffraction_viridis_action)
+        tcBF_action_auto = QAction("tcBF (Automatic)", self)
+        tcBF_action_auto.triggered.connect(self.reconstruct_tcBF_auto)
+        self.processing_menu.addAction(tcBF_action_auto)
 
-        diffraction_inferno_action = QAction("&Inferno", self)
-        diffraction_inferno_action.setCheckable(True)
-        diffraction_inferno_action.triggered.connect(self.update_diffraction_space_view)
-        diffraction_colormap_group.addAction(diffraction_inferno_action)
-        self.colormap_menu.addAction(diffraction_inferno_action)
-
-        real_space_colormap_group = QActionGroup(self)
-        real_space_colormap_group.setExclusive(True)
-        self.real_space_colormap_group = real_space_colormap_group
-
-        real_space_colormap_separator = QAction("Virtual Image", self)
-        real_space_colormap_separator.setDisabled(True)
-        self.colormap_menu.addAction(real_space_colormap_separator)
-
-        real_space_grey_action = QAction("Gre&y", self)
-        real_space_grey_action.setCheckable(True)
-        real_space_grey_action.setChecked(True)
-        real_space_grey_action.triggered.connect(self.update_real_space_view)
-        real_space_colormap_group.addAction(real_space_grey_action)
-        self.colormap_menu.addAction(real_space_grey_action)
-
-        real_space_viridis_action = QAction("Viridi&s", self)
-        real_space_viridis_action.setCheckable(True)
-        real_space_viridis_action.triggered.connect(self.update_real_space_view)
-        real_space_colormap_group.addAction(real_space_viridis_action)
-        self.colormap_menu.addAction(real_space_viridis_action)
-
-        real_space_inferno_action = QAction("Infern&o", self)
-        real_space_inferno_action.setCheckable(True)
-        real_space_inferno_action.triggered.connect(self.update_real_space_view)
-        real_space_colormap_group.addAction(real_space_inferno_action)
-        self.colormap_menu.addAction(real_space_inferno_action)
-
+        # Help menu
         self.help_menu = QMenu("&Help", self)
         self.menu_bar.addMenu(self.help_menu)
 
@@ -460,6 +492,8 @@ class DataViewer(QMainWindow):
         self.diffraction_space_widget = pg.ImageView()
         self.diffraction_space_widget.setImage(np.zeros((512, 512)))
         self.diffraction_space_view_text = QLabel("Slice")
+
+        self.diffraction_space_widget.setMouseTracking(True)
 
         # Create virtual detector ROI selector
         self.virtual_detector_point = pg_point_roi(
@@ -496,7 +530,7 @@ class DataViewer(QMainWindow):
         self.real_space_scale_bar.anchor((1, 1), (1, 1), offset=(-40, -40))
 
         # Name and return
-        self.real_space_widget.setWindowTitle("Real Space")
+        self.real_space_widget.setWindowTitle("Virtual Image")
 
         self.diffraction_space_widget.setAcceptDrops(True)
         self.real_space_widget.setAcceptDrops(True)
@@ -555,7 +589,7 @@ class DataViewer(QMainWindow):
         self.statusBar().addPermanentWidget(self.real_space_view_text)
         self.statusBar().addPermanentWidget(VLine())
         self.diffraction_rescale_button = LatchingButton(
-            "Autoscale Diffraction",
+            "Autorange Diffraction",
             status_bar=self.statusBar(),
             latched=True,
         )
@@ -564,7 +598,7 @@ class DataViewer(QMainWindow):
         )
         self.statusBar().addPermanentWidget(self.diffraction_rescale_button)
         self.realspace_rescale_button = LatchingButton(
-            "Autoscale Real Space",
+            "Autorange Virtual Image",
             status_bar=self.statusBar(),
             latched=True,
         )
