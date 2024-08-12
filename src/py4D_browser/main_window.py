@@ -461,6 +461,7 @@ class DataViewer(QMainWindow):
             partial(self.update_diffraction_space_view, False)
         )
 
+
         # Processing menu
         self.processing_menu = QMenu("&Processing", self)
         self.menu_bar.addMenu(self.processing_menu)
