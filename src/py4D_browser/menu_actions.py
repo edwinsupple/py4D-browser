@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from py4D_browser.help_menu import KeyboardMapMenu
 from py4D_browser.utils import ResizeDialog
 from py4DSTEM.io.filereaders import read_arina
+from py4D_browser.app5loader import app5topy4dstem
 
 
 def load_data_auto(self):
@@ -65,6 +66,7 @@ def load_file(self, filepath, mmap=False, binning=1):
     print(f"Loading file {filepath}")
     extension = os.path.splitext(filepath)[-1].lower()
     print(f"Type: {extension}")
+
     if extension in (".h5", ".hdf5", ".py4dstem", ".emd", ".mat"):
         file = h5py.File(filepath, "r")
         datacubes = get_ND(file)
@@ -97,6 +99,8 @@ def load_file(self, filepath, mmap=False, binning=1):
                 raise ValueError("No 4D (or even 3D) data detected in the H5 file!")
     elif extension in [".npy"]:
         self.datacube = py4DSTEM.DataCube(np.load(filepath))
+    elif extension in [".app5"]:
+        self.datacube = app5topy4dstem(filepath)[0]
     else:
         self.datacube = py4DSTEM.import_file(
             filepath,
