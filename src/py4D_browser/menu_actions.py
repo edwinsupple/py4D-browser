@@ -70,6 +70,7 @@ def load_file(self, filepath, mmap=False, binning=1):
     if extension in (".h5", ".hdf5", ".py4dstem", ".emd", ".mat", ".app5"):
         if extension == ".app5":
             self.datacube = app5topy4dstem(filepath)[0]
+
         else:
             file = h5py.File(filepath, "r")
             datacubes = get_ND(file)
@@ -102,6 +103,8 @@ def load_file(self, filepath, mmap=False, binning=1):
                     raise ValueError("No 4D (or even 3D) data detected in the H5 file!")
     elif extension in [".npy"]:
         self.datacube = py4DSTEM.DataCube(np.load(filepath))
+    elif extension in [".app5"]:
+        self.datacube = app5topy4dstem(filepath)[0]
     else:
         self.datacube = py4DSTEM.import_file(
             filepath,
@@ -326,7 +329,9 @@ def show_file_dialog(self) -> str:
         self,
         "Open 4D-STEM Data",
         "",
+
         "4D-STEM Data (*.dm3 *.dm4 *.raw *.mib *.gtg *.h5 *.hdf5 *.emd *.py4dstem *.npy *.npz *.mat *.app5);;Any file (*)",
+
     )
     if filename is not None and len(filename[0]) > 0:
         return filename[0]
