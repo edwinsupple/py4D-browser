@@ -102,6 +102,8 @@ def load_file(self, filepath, mmap=False, binning=1):
                     raise ValueError("No 4D (or even 3D) data detected in the H5 file!")
     elif extension in [".npy"]:
         self.datacube = py4DSTEM.DataCube(np.load(filepath))
+    elif extension in [".app5"]:
+        self.datacube = app5topy4dstem(filepath)[0]
     else:
         self.datacube = py4DSTEM.import_file(
             filepath,
