@@ -9,7 +9,7 @@ from py4D_browser.help_menu import KeyboardMapMenu
 from py4D_browser.dialogs import CalibrateDialog, ResizeDialog, ManualTCBFDialog
 from py4D_browser.utils import make_detector
 from py4DSTEM.io.filereaders import read_arina
-
+from app5loader import app5topy4dstem 
 
 def load_data_auto(self):
     filename = self.show_file_dialog()
@@ -66,36 +66,40 @@ def load_file(self, filepath, mmap=False, binning=1):
     print(f"Loading file {filepath}")
     extension = os.path.splitext(filepath)[-1].lower()
     print(f"Type: {extension}")
-    if extension in (".h5", ".hdf5", ".py4dstem", ".emd", ".mat"):
-        file = h5py.File(filepath, "r")
-        datacubes = get_ND(file)
-        print(f"Found {len(datacubes)} 4D datasets inside the HDF5 file...")
-        if len(datacubes) >= 1:
-            # Read the first datacube in the HDF5 file into RAM
-            print(f"Reading dataset at location {datacubes[0].name}")
-            self.datacube = py4DSTEM.DataCube(
-                datacubes[0] if mmap else datacubes[0][()]
-            )
-
-            R_size, R_units, Q_size, Q_units = find_calibrations(datacubes[0])
-
-            self.datacube.calibration.set_R_pixel_size(R_size)
-            self.datacube.calibration.set_R_pixel_units(R_units)
-            self.datacube.calibration.set_Q_pixel_size(Q_size)
-            self.datacube.calibration.set_Q_pixel_units(Q_units)
-
+    if extension in (".h5", ".hdf5", ".py4dstem", ".emd", ".mat", ".app5"):
+        if extension == ".app5":
+            self.datacube = app5topy4dstem(filepath)[0]
+            
         else:
-            # if no 4D data was found, look for 3D data
-            datacubes = get_ND(file, N=3)
-            print(f"Found {len(datacubes)} 3D datasets inside the HDF5 file...")
+            file = h5py.File(filepath, "r")
+            datacubes = get_ND(file)
+            print(f"Found {len(datacubes)} 4D datasets inside the HDF5 file...")
             if len(datacubes) >= 1:
-                array = datacubes[0] if mmap else datacubes[0][()]
-                new_shape = ResizeDialog.get_new_size([1, array.shape[0]], parent=self)
+                # Read the first datacube in the HDF5 file into RAM
+                print(f"Reading dataset at location {datacubes[0].name}")
                 self.datacube = py4DSTEM.DataCube(
-                    array.reshape(*new_shape, *array.shape[1:])
+                    datacubes[0] if mmap else datacubes[0][()]
                 )
+
+                R_size, R_units, Q_size, Q_units = find_calibrations(datacubes[0])
+
+                self.datacube.calibration.set_R_pixel_size(R_size)
+                self.datacube.calibration.set_R_pixel_units(R_units)
+                self.datacube.calibration.set_Q_pixel_size(Q_size)
+                self.datacube.calibration.set_Q_pixel_units(Q_units)
+
             else:
-                raise ValueError("No 4D (or even 3D) data detected in the H5 file!")
+                # if no 4D data was found, look for 3D data
+                datacubes = get_ND(file, N=3)
+                print(f"Found {len(datacubes)} 3D datasets inside the HDF5 file...")
+                if len(datacubes) >= 1:
+                    array = datacubes[0] if mmap else datacubes[0][()]
+                    new_shape = ResizeDialog.get_new_size([1, array.shape[0]], parent=self)
+                    self.datacube = py4DSTEM.DataCube(
+                        array.reshape(*new_shape, *array.shape[1:])
+                    )
+                else:
+                    raise ValueError("No 4D (or even 3D) data detected in the H5 file!")
     elif extension in [".npy"]:
         self.datacube = py4DSTEM.DataCube(np.load(filepath))
     else:
@@ -322,7 +326,7 @@ def show_file_dialog(self) -> str:
         self,
         "Open 4D-STEM Data",
         "",
-        "4D-STEM Data (*.dm3 *.dm4 *.raw *.mib *.gtg *.h5 *.hdf5 *.emd *.py4dstem *.npy *.npz *.mat);;Any file (*)",
+        "4D-STEM Data (*.dm3 *.dm4 *.raw *.mib *.gtg *.h5 *.hdf5 *.emd *.py4dstem *.npy *.npz *.mat, *.app5);;Any file (*)",
     )
     if filename is not None and len(filename[0]) > 0:
         return filename[0]
