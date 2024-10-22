@@ -28,6 +28,9 @@ def update_real_space_view(self, reset=False):
         "iCoM",
     ], detector_mode
 
+    scaling_mode = self.vimg_scaling_group.checkedAction().text().replace("&", "")
+    assert scaling_mode in ["Linear", "Log", "Square Root"], scaling_mode
+
     # If a CoM method is checked, ensure linear scaling
     if detector_mode in ["CoM Magnitude", "CoM Angle"] and scaling_mode != "Linear":
         print("Warning! Setting linear scaling for CoM image")
